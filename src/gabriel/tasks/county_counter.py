@@ -10,15 +10,30 @@ from .elo import EloConfig, EloRater
 from .regional import Regional, RegionalConfig
 from ..utils import Teleprompter, create_county_choropleth
 
-def _years_to_slices(years: Sequence[int] | Sequence[str]) -> List[Tuple[str, str, str]]:
-    out = []
+def _years_to_slices(years: Sequence[int | str]) -> List[Tuple[str, str, str]]:
+    """Convert [2015, 2016] -> [("y2015","2015-01-01","2015-12-31"), ...]."""
+    out: List[Tuple[str, str, str]] = []
     for y in years:
         y = int(y)
-        label = f"y{y}"
-        start = f"{y:04d}-01-01"
-        end = f"{y:04d}-12-31"
-        out.append((label, start, end))
+        out.append((f"y{y}", f"{y:04d}-01-01", f"{y:04d}-12-31"))
     return out
+
+def _time_msg(start: Optional[str], end: Optional[str]) -> str:
+    """Human-friendly instruction text for a time window."""
+    if not start or not end:
+        return ""
+    y1, y2 = start[:4], end[:4]
+    if y1 == y2 and start.endswith("01-01") and end.endswith("12-31"):
+        return (
+            f"ONLY use material from the year {y1}. "
+            f"Ignore sources clearly outside {y1}. "
+            "If evidence is sparse, say so explicitly."
+        )
+    return (
+        f"ONLY use material created/published between {start} and {end} (inclusive). "
+        "Ignore sources clearly outside this span. "
+        "If evidence is sparse, state that explicitly."
+    )
 class CountyCounter:
     """Run regional analysis on counties and rate them via Elo."""
 
@@ -176,13 +191,15 @@ class RegionCounter:
     Parameters
     ----------
     df : DataFrame
-    region_col : column containing region names/IDs for prompts
+    region_col : column name containing region labels
     topics : list of topic strings
-    years : optional list of years (ints/strings). If provided (and time_slices is None),
-            a separate Regional/Elo run is done for each year.
+    years : optional list of years (ints/str). Each year is a separate slice.
     time_slices : optional list of (label, start_iso, end_iso) tuples. Overrides years.
-    geo_id_col : optional key for mapping (FIPS, etc.)
+    geo_id_col : optional column for mapping (FIPS, etc.)
     ...
+    Returns
+    -------
+    (elo_results_df, reports_df)
     """
 
     def __init__(
@@ -266,21 +283,17 @@ class RegionCounter:
         end: Optional[str],
         reset_files: bool,
     ) -> Tuple[pd.DataFrame, pd.DataFrame]:
-        if slice_label:
-            run_name = f"regional_{slice_label}"
-            add_instr = (
-                f"{self.additional_instructions}\nTime window: {start} to {end}. "
-                "Ignore sources clearly outside this range."
-            ).strip()
-        else:
-            run_name = "regional_base"
-            add_instr = self.additional_instructions
+        time_block = _time_msg(start, end)
 
+        run_name = f"regional_{slice_label}" if slice_label else "regional_base"
         reg_cfg = RegionalConfig(
             model=self.model_regional,
             n_parallels=self.n_parallels,
             use_dummy=self.use_dummy,
-            additional_instructions=add_instr,
+            additional_instructions=(
+                f"{self.additional_instructions}\n{time_block}".strip()
+                if time_block else self.additional_instructions
+            ),
             additional_guidelines=self.additional_guidelines,
             reasoning_effort=self.reasoning_effort,
             search_context_size=self.search_context_size,
@@ -301,6 +314,12 @@ class RegionCounter:
 
             attrs = list(self.elo_attributes.keys()) if self.elo_attributes else [topic]
 
+            elo_time_block = time_block  
+            elo_instr_full = (
+                f"{self.elo_instructions}\n{elo_time_block}".strip()
+                if elo_time_block else self.elo_instructions
+            )
+
             cfg = EloConfig(
                 attributes=attrs,
                 n_rounds=self.n_elo_rounds,
@@ -309,7 +328,7 @@ class RegionCounter:
                 save_dir=self.save_path,
                 run_name=f"elo_{topic}_{slice_label or 'base'}",
                 use_dummy=self.use_dummy,
-                instructions=self.elo_instructions,
+                instructions=elo_instr_full,
                 additional_guidelines=self.elo_guidelines,
                 print_example_prompt=False,
                 timeout=self.elo_timeout,
