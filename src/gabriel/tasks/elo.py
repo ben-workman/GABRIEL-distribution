@@ -361,8 +361,12 @@ class EloRater:
 
             for ident, resp in zip(resp_df.Identifier, resp_df.Response):
                 try:
-                    _rnd_i, batch_idx, _pair_idx, a_id, b_id = ident.split("|")
+                    parts = ident.split("|", 4)
+                    if len(parts) != 5:
+                        continue
+                    rnd_i, batch_idx, pair_idx, a_id, b_id = parts
                     batch_idx = int(batch_idx)
+                    pair_idx = int(pair_idx)
                 except Exception:
                     continue
 
