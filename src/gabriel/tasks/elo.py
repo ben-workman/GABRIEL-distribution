@@ -295,7 +295,7 @@ class EloRater:
     # ---------- main ----------
     async def run(self, df: pd.DataFrame, text_col: str, id_col: str, *, reset_files: bool = False) -> pd.DataFrame:
         final_path = os.path.join(self.save_path, self.cfg.final_filename)
-        if os.path.exists(final_path):
+        if not reset_files and os.path.exists(final_path):
             return pd.read_csv(final_path)
 
         df = df.copy()
@@ -361,14 +361,12 @@ class EloRater:
 
             for ident, resp in zip(resp_df.Identifier, resp_df.Response):
                 try:
-                    parts = ident.split("|", 4)
-                    if len(parts) != 5:
-                        continue
-                    rnd_i, batch_idx, pair_idx, a_id, b_id = parts
+                    rnd_i, batch_idx, pair_idx, rest = ident.split("|", 3)
+                    a_id, b_id          = rest.split("|", 1)
                     batch_idx = int(batch_idx)
-                    pair_idx = int(pair_idx)
+                    pair_idx  = int(pair_idx)
                 except Exception:
-                    continue
+                    continue 
 
                 # robust dict coercion
                 def _coerce_dict(raw: Any) -> Dict[str, Any]:
