@@ -360,25 +360,29 @@ class EloRater:
             )
 
             for ident, resp in zip(resp_df.Identifier, resp_df.Response):
+                parts = ident.split("|")
+
+                if len(parts) == 5:
+                    rnd_i, batch_idx_str, pair_idx_str, a_id, b_id = parts
+
+                elif len(parts) == 7:
+                    (
+                        rnd_i, batch_idx_str, pair_idx_str,
+                        a_reg, a_slc,
+                        b_reg, b_slc
+                    ) = parts
+                    a_id = f"{a_reg}|{a_slc}"
+                    b_id = f"{b_reg}|{b_slc}"
+
+                else:
+                    continue
+
                 try:
-                    parts = ident.split("|")
-                    if len(parts) != 7:
-                        continue
-
-                    rnd_i, batch_idx, pair_idx, \
-                    a_region, a_slice, \
-                    b_region, b_slice = parts
-
-                    a_id = f"{a_region}|{a_slice}"
-                    b_id = f"{b_region}|{b_slice}"
-
-                    batch_idx = int(batch_idx)
-                    pair_idx  = int(pair_idx)
-
+                    batch_idx = int(batch_idx_str)
+                    pair_idx  = int(pair_idx_str)
                 except ValueError:
                     continue
 
-                # robust dict coercion
                 def _coerce_dict(raw: Any) -> Dict[str, Any]:
                     obj = safe_json(raw)
                     if isinstance(obj, dict):
