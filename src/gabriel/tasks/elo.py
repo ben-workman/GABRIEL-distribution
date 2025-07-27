@@ -366,11 +366,7 @@ class EloRater:
                     rnd_i, batch_idx_str, pair_idx_str, a_id, b_id = parts
 
                 elif len(parts) == 7:
-                    (
-                        rnd_i, batch_idx_str, pair_idx_str,
-                        a_reg, a_slc,
-                        b_reg, b_slc
-                    ) = parts
+                    rnd_i, batch_idx_str, pair_idx_str, a_reg, a_slc, b_reg, b_slc = parts
                     a_id = f"{a_reg}|{a_slc}"
                     b_id = f"{b_reg}|{b_slc}"
 
