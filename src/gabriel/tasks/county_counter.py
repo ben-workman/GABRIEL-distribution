@@ -182,7 +182,8 @@ class RegionCounter:
                         right_on="identifier",
                         how="left",
                     )
-                    out_col = f"{col}__{slice_label}" if slice_label else col
+                    safe_topic = topic.replace(" ", "_")
+                    out_col = f"{safe_topic}__{col}__{slice_label}" if slice_label else f"{safe_topic}__{col}"
                     results[out_col] = results[tmp]
                     results = results.drop(columns=["identifier", tmp])
             else:
@@ -194,7 +195,8 @@ class RegionCounter:
                     right_on="identifier",
                     how="left",
                 )
-                out_col = f"{topic}__{slice_label}" if slice_label else topic
+                safe_topic = topic.replace(" ", "_")
+                out_col = f"{safe_topic}__{col}__{slice_label}" if slice_label else f"{safe_topic}__{col}"
                 results[out_col] = results[tmp]
                 results = results.drop(columns=["identifier", tmp])
         return results, reports_df
