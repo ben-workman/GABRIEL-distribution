@@ -218,7 +218,7 @@ class RegionCounter:
         )
         if "time_slice" not in melted.columns:
             return final_df
-        out = final_df.copy()
+        out = melted[["region", "time_slice"]].drop_duplicates().astype({"region": str, "time_slice": str})
         for topic in self.topics:
             df_topic = (
                 melted[melted["topic"] == topic]
@@ -244,11 +244,8 @@ class RegionCounter:
             elo_df = await elo.run(df_topic, text_col="text", id_col="identifier", reset_files=reset_files)
             elo_df[["region", "time_slice"]] = elo_df["identifier"].str.split("|", n=1, expand=True)
             score_cols = [c for c in elo_df.columns if c not in ("identifier", "text", "region", "time_slice")]
-            for sc in score_cols:
-                pivoted = elo_df.pivot(index="region", columns="time_slice", values=sc).reset_index()
-                ren = {c: f"{sc}__{topic}__{c}" for c in pivoted.columns if c != "region"}
-                pivoted = pivoted.rename(columns=ren)
-                out = out.merge(pivoted, left_on="region", right_on="region", how="left")
+            topic_df = elo_df[["region", "time_slice"] + score_cols].rename(columns={c: f"{c}__{topic}" for c in score_cols})
+            out = out.merge(topic_df, on=["region", "time_slice"], how="left")
         return out
 
     async def run(self, *, reset_files: bool = False) -> Tuple[pd.DataFrame, pd.DataFrame]:
