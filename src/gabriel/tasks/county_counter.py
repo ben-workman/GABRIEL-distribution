@@ -64,6 +64,7 @@ class RegionCounter:
     ) -> None:
         self.df = df.copy()
         self.region_col = region_col
+        self.geo_id_col = geo_id_col
         self.topics = topics
 
         if time_slices is None:
