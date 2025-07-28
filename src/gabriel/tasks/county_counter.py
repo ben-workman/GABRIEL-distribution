@@ -253,7 +253,7 @@ class RegionCounter:
         if self.time_slices:
             all_results = []
             all_reports = []
-            run_elo_inside = (self.elo_axis == "regions")
+            run_elo_inside = True
             for label, start, end in self.time_slices:
                 res, rep = await self._run_one_slice(label, start, end, reset_files, run_elo_inside)
                 all_results.append(res)
