@@ -266,41 +266,8 @@ class RegionCounter:
             for other in all_results[1:]:
                 final = final.merge(other, on="region", how="outer")
             reports_df = pd.concat(all_reports, ignore_index=True)
-            if self.elo_axis == "slices":
+            if self.elo_axis in ("slices", "both"):
                 final = await self._elo_across_slices(final, reports_df, reset_files)
-            elif self.elo_axis == "both":
-                melted = reports_df.melt(
-                    id_vars=["region", "time_slice"],
-                    var_name="topic",
-                    value_name="text"
-                ).dropna(subset=["text"])
-                melted = melted.assign(
-                    identifier=melted["region"] + "|" + melted["time_slice"]
-                )
-                df_items = melted[["identifier", "text"]].drop_duplicates("identifier")
-                attrs = list(self.elo_attributes.keys()) if self.elo_attributes else self.topics
-                cfg = EloConfig(
-                    attributes=attrs,
-                    n_rounds=self.n_elo_rounds,
-                    n_parallels=self.n_parallels,
-                    model=self.model_elo,
-                    save_dir=self.save_path,
-                    run_name="elo_joint_region_time",
-                    use_dummy=self.use_dummy,
-                    instructions=self.elo_instructions,
-                    additional_guidelines=self.elo_guidelines,
-                    timeout=self.elo_timeout,
-                    print_example_prompt=False
-                )
-                rater = EloRater(self.tele, cfg)
-                elo_df = await rater.run(
-                    df_items,
-                    text_col="text",
-                    id_col="identifier",
-                    reset_files=reset_files
-                )
-                elo_df[["region", "time_slice"]] = elo_df["identifier"].str.split("|", n=1, expand=True)
-                final = elo_df
 
         else:
             res, rep = await self._run_one_slice(None, None, None, reset_files, self.elo_axis == "regions")
