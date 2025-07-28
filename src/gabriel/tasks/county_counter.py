@@ -64,12 +64,22 @@ class RegionCounter:
     ) -> None:
         self.df = df.copy()
         self.region_col = region_col
-        self.geo_id_col = geo_id_col
         self.topics = topics
-        if time_slices is None and years is not None:
-            self.time_slices = _years_to_slices(years)
+
+        if time_slices is None:
+            if years is not None:
+                self.time_slices = _years_to_slices(years)
+            else:
+                self.time_slices = None
         else:
-            self.time_slices = time_slices
+            processed = []
+            for idx, ts in enumerate(time_slices):
+                if len(ts) == 3:
+                    processed.append(ts)
+                else:
+                    start, end = ts
+                    processed.append((f"slice_{idx+1}", start, end))
+            self.time_slices = processed
         self.model_regional = model_regional
         self.model_elo = model_elo
         self.n_parallels = n_parallels
