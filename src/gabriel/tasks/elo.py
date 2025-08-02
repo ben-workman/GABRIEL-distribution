@@ -9,9 +9,9 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import numpy as np
 import pandas as pd
 
-from ..utils.teleprompter import Teleprompter
+from ..core.prompt_template import PromptTemplate
 from ..utils.openai_utils import get_all_responses
-from ..utils import safe_json
+from ..utils import safest_json
 
 
 @dataclass
@@ -48,9 +48,9 @@ class EloConfig:
 
 
 class EloRater:
-    def __init__(self, teleprompter: Teleprompter, cfg: EloConfig) -> None:
-        self.tele = teleprompter
+    def __init__(self, cfg: EloConfig, template: Optional[PromptTemplate] = None) -> None:
         self.cfg = cfg
+        self.template = template or PromptTemplate.from_package("rankings_prompt.jinja2")
         self.save_path = os.path.join(cfg.save_dir, cfg.run_name)
         os.makedirs(self.save_path, exist_ok=True)
         self.rng = random.Random(cfg.seed)
@@ -293,7 +293,15 @@ class EloRater:
         return self._pairs_adjacent(item_ids, texts_by_id, current_ratings, mpr)
 
     # ---------- main ----------
-    async def run(self, df: pd.DataFrame, text_col: str, id_col: str, *, reset_files: bool = False) -> pd.DataFrame:
+    async def run(
+        self,
+        df: pd.DataFrame,
+        text_col: str,
+        id_col: str,
+        *,
+        reset_files: bool = False,
+        **kwargs: Any,
+    ) -> pd.DataFrame:
         final_path = os.path.join(self.save_path, self.cfg.final_filename)
         if not reset_files and os.path.exists(final_path):
             return pd.read_csv(final_path)
@@ -335,13 +343,15 @@ class EloRater:
                 attr_def_map = ({a: self.cfg.attributes[a] for a in batch}
                                 if isinstance(self.cfg.attributes, dict) else {a: "" for a in batch})
                 for pair_idx, ((id_a, t_a), (id_b, t_b)) in enumerate(pairs):
+                    add_instructions = self.cfg.instructions
+                    if self.cfg.additional_guidelines:
+                        add_instructions = (add_instructions + "\n" + self.cfg.additional_guidelines).strip()
                     prompts.append(
-                        self.tele.generic_elo_prompt(
-                            text_circle=t_a,
-                            text_square=t_b,
+                        self.template.render(
+                            passage_circle=t_a,
+                            passage_square=t_b,
                             attributes=attr_def_map,
-                            instructions=self.cfg.instructions,
-                            additional_guidelines=self.cfg.additional_guidelines,
+                            additional_instructions=add_instructions,
                         )
                     )
                     ids.append(f"{rnd}|{batch_idx}|{pair_idx}|{id_a}|{id_b}")
@@ -357,43 +367,44 @@ class EloRater:
                 use_dummy=self.cfg.use_dummy,
                 timeout=self.cfg.timeout,
                 print_example_prompt=self.cfg.print_example_prompt,
+                **kwargs,
             )
 
             for ident, resp in zip(resp_df.Identifier, resp_df.Response):
-                parts = ident.split("|")
-
-                if len(parts) == 5:
-                    rnd_i, batch_idx_str, pair_idx_str, a_id, b_id = parts
-
-                elif len(parts) == 7:
-                    rnd_i, batch_idx_str, pair_idx_str, a_reg, a_slc, b_reg, b_slc = parts
-                    a_id = f"{a_reg}|{a_slc}"
-                    b_id = f"{b_reg}|{b_slc}"
-
-                else:
-                    continue
-
                 try:
-                    batch_idx = int(batch_idx_str)
-                    pair_idx  = int(pair_idx_str)
+                    parts = ident.split("|")
+                    # ── new, more forgiving parsing ───────────────────────────────────────────
+                    if len(parts) == 7:
+                        rnd_i, batch_idx, pair_idx, a_region, a_slice, b_region, b_slice = parts
+                        a_id = f"{a_region}|{a_slice}"
+                        b_id = f"{b_region}|{b_slice}"
+                    elif len(parts) == 5:
+                        rnd_i, batch_idx, pair_idx, a_id, b_id = parts           # ← works for your ids
+                    else:                                                         # anything unexpected
+                        continue
+                    batch_idx = int(batch_idx)
+                    pair_idx  = int(pair_idx)
+
+
                 except ValueError:
                     continue
 
-                def _coerce_dict(raw: Any) -> Dict[str, Any]:
-                    obj = safe_json(raw)
+                # robust dict coercion
+                async def _coerce_dict(raw: Any) -> Dict[str, Any]:
+                    obj = await safest_json(raw)
                     if isinstance(obj, dict):
                         return obj
                     if isinstance(obj, str):
-                        obj2 = safe_json(obj)
+                        obj2 = await safest_json(obj)
                         if isinstance(obj2, dict):
                             return obj2
                     if isinstance(obj, list) and obj:
-                        inner = safe_json(obj[0])
+                        inner = await safest_json(obj[0])
                         if isinstance(inner, dict):
                             return inner
                     return {}
 
-                safe_obj = _coerce_dict(resp)
+                safe_obj = await _coerce_dict(resp)
                 if not safe_obj:
                     continue
 
@@ -404,10 +415,14 @@ class EloRater:
                     if isinstance(val, dict) and "winner" in val:
                         val = val["winner"]
                     v = str(val).strip().lower()
-                    if v.startswith(("cir", "a", "left", "text a")):
+                    if v.startswith(("cir", "c", "a", "left", "text a")):
                         return "circle"
                     if v.startswith(("squ", "b", "right", "text b")):
                         return "square"
+                    if v.startswith("draw"):
+                        return "draw"
+                    if v.startswith("insufficient"):
+                        return "insufficient"
                     return ""
 
                 for attr_raw, winner_raw in safe_obj.items():
@@ -416,18 +431,22 @@ class EloRater:
                         continue
                     real_attr = batch_attr_map[attr_key_l]
                     w = _winner(winner_raw)
+
                     if w == "circle":
-                        winner, loser = a_id, b_id
+                        history_pairs[real_attr].append((a_id, b_id))
+                        score_a, score_b = 1.0, 0.0
                     elif w == "square":
-                        winner, loser = b_id, a_id
+                        history_pairs[real_attr].append((b_id, a_id))
+                        score_a, score_b = 0.0, 1.0
+                    elif w in ("draw", "insufficient"):
+                        history_pairs[real_attr].append((a_id, b_id))
+                        history_pairs[real_attr].append((b_id, a_id))
+                        score_a = score_b = 0.5
                     else:
                         continue
 
-                    history_pairs[real_attr].append((winner, loser))
-
                     if self.cfg.rating_method.lower() == "elo":
                         exp_a = expected(ratings[a_id][real_attr], ratings[b_id][real_attr])
-                        score_a, score_b = (1, 0) if winner == a_id else (0, 1)
                         ratings[a_id][real_attr] += self.cfg.k_factor * (score_a - exp_a)
                         ratings[b_id][real_attr] += self.cfg.k_factor * (score_b - (1 - exp_a))
 

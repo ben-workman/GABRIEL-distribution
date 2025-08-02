@@ -2,47 +2,25 @@ from __future__ import annotations
 
 import os
 from datetime import datetime
-from typing import List, Optional, Dict, Tuple, Sequence
+from typing import List, Optional, Dict
 
 import pandas as pd
 
 from .elo import EloConfig, EloRater
 from .regional import Regional, RegionalConfig
-from ..utils import Teleprompter, create_county_choropleth
+from ..utils import create_county_choropleth
 
 
-def _years_to_slices(years: Sequence[int | str]) -> List[Tuple[str, str, str]]:
-    out: List[Tuple[str, str, str]] = []
-    for y in years:
-        y = int(y)
-        out.append((f"y{y}", f"{y:04d}-01-01", f"{y:04d}-12-31"))
-    return out
+class CountyCounter:
+    """Run regional analysis on counties and rate them via Elo."""
 
-def _time_msg(start: Optional[str], end: Optional[str]) -> str:
-    if not start or not end:
-        return ""
-    y1, y2 = start[:4], end[:4]
-    if y1 == y2 and start.endswith("01-01") and end.endswith("12-31"):
-        return (
-            f"ONLY use material from the year {y1}. "
-            f"Ignore sources clearly outside {y1}. "
-            "If evidence is sparse, say so explicitly."
-        )
-    return (
-        f"ONLY use material created/published between {start} and {end} (inclusive). "
-        "Ignore sources clearly outside this span. "
-        "If evidence is sparse, state that explicitly."
-    )
-class RegionCounter:
     def __init__(
         self,
         df: pd.DataFrame,
-        region_col: str,
+        county_col: str,
         topics: List[str],
         *,
-        years: Optional[Sequence[int | str]] = None,
-        time_slices: Optional[List[Tuple[str, str, str]]] = None,
-        geo_id_col: Optional[str] = None,
+        fips_col: Optional[str] = None,
         save_dir: str = os.path.expanduser("~/Documents/runs"),
         run_name: Optional[str] = None,
         model_regional: str = "o4-mini",
@@ -57,50 +35,33 @@ class RegionCounter:
         elo_instructions: str = "",
         additional_guidelines: str = "",
         elo_guidelines: str = "",
-        z_score_choropleth: bool = False,
-        elo_attributes: Dict[str, str] | None = None,
-        print_example_prompt: bool = False,
-        elo_axis: str = "regions",
+        z_score_choropleth: bool = True,
+        elo_attributes: Optional[Dict] = None,
     ) -> None:
         self.df = df.copy()
-        self.region_col = region_col
-        self.geo_id_col = geo_id_col
+        self.county_col = county_col
+        self.fips_col = fips_col
         self.topics = topics
-
-        if time_slices is None:
-            if years is not None:
-                self.time_slices = _years_to_slices(years)
-            else:
-                self.time_slices = None
-        else:
-            processed = []
-            for idx, ts in enumerate(time_slices):
-                if len(ts) == 3:
-                    processed.append(ts)
-                else:
-                    start, end = ts
-                    processed.append((f"slice_{idx+1}", start, end))
-            self.time_slices = processed
         self.model_regional = model_regional
         self.model_elo = model_elo
         self.n_parallels = n_parallels
         self.n_elo_rounds = n_elo_rounds
-        self.elo_timeout = elo_timeout
         self.use_dummy = use_dummy
         self.additional_instructions = additional_instructions
-        self.additional_guidelines = additional_guidelines
         self.elo_instructions = elo_instructions
+        self.additional_guidelines = additional_guidelines
         self.elo_guidelines = elo_guidelines
         self.reasoning_effort = reasoning_effort
         self.search_context_size = search_context_size
         self.z_score_choropleth = z_score_choropleth
         self.elo_attributes = elo_attributes
-        self.elo_axis = elo_axis
-        run_name = run_name or f"region_counter_{datetime.now():%Y%m%d_%H%M%S}"
+        self.elo_timeout = elo_timeout
+
+        run_name = run_name or f"county_counter_{datetime.now():%Y%m%d_%H%M%S}"
         self.save_path = os.path.join(save_dir, run_name)
         os.makedirs(self.save_path, exist_ok=True)
-        self.tele = Teleprompter()
-        self.reg_cfg_base = RegionalConfig(
+
+        reg_cfg = RegionalConfig(
             model=self.model_regional,
             n_parallels=self.n_parallels,
             use_dummy=self.use_dummy,
@@ -108,186 +69,92 @@ class RegionCounter:
             additional_guidelines=self.additional_guidelines,
             reasoning_effort=self.reasoning_effort,
             search_context_size=self.search_context_size,
-            print_example_prompt=print_example_prompt,
+            print_example_prompt=True,
             save_dir=self.save_path,
             run_name="regional",
         )
+        self.regional = Regional(self.df, self.county_col, self.topics, reg_cfg)
 
-    async def _run_one_slice(
-        self,
-        slice_label: Optional[str],
-        start: Optional[str],
-        end: Optional[str],
-        reset_files: bool,
-        run_elo: bool,
-    ) -> Tuple[pd.DataFrame, pd.DataFrame]:
-        time_block = _time_msg(start, end)
-        run_name = f"regional_{slice_label}" if slice_label else "regional_base"
-        reg_cfg = RegionalConfig(
-            model=self.model_regional,
-            n_parallels=self.n_parallels,
-            use_dummy=self.use_dummy,
-            additional_instructions=(
-                f"{self.additional_instructions}\n{time_block}".strip()
-                if time_block else self.additional_instructions
-            ),
-            additional_guidelines=self.additional_guidelines,
-            reasoning_effort=self.reasoning_effort,
-            search_context_size=self.search_context_size,
-            print_example_prompt=False,
-            save_dir=self.save_path,
-            run_name=run_name,
-        )
-        regional = Regional(self.df, self.region_col, self.topics, reg_cfg)
-        reports_df = await regional.run(reset_files=reset_files)
-        if not run_elo:
-            empty_results = reports_df[["region"]].copy().astype({"region": str})
-            return empty_results, reports_df
-        results = reports_df[["region"]].copy().astype({"region": str})
+    async def run(self, *, reset_files: bool = False) -> pd.DataFrame:
+        reports_df = await self.regional.run(reset_files=reset_files)
+        results = reports_df[["region"]].copy()
+
         for topic in self.topics:
             df_topic = reports_df[["region", topic]].rename(
                 columns={"region": "identifier", topic: "text"}
             )
-            attrs = list(self.elo_attributes.keys()) if self.elo_attributes else [topic]
-            elo_instr_full = (
-                f"{self.elo_instructions}\n{time_block}".strip()
-                if time_block else self.elo_instructions
-            )
-            cfg = EloConfig(
-                attributes=attrs,
-                n_rounds=self.n_elo_rounds,
-                n_parallels=self.n_parallels,
-                model=self.model_elo,
-                save_dir=self.save_path,
-                run_name=f"elo_{topic}_{slice_label or 'base'}",
-                use_dummy=self.use_dummy,
-                instructions=elo_instr_full,
-                additional_guidelines=self.elo_guidelines,
-                print_example_prompt=False,
-                timeout=self.elo_timeout,
-            )
-            rater = EloRater(self.tele, cfg)
-            elo_df = await rater.run(df_topic, text_col="text", id_col="identifier", reset_files=reset_files)
-            elo_df["identifier"] = elo_df["identifier"].astype(str)
-            score_cols = [c for c in elo_df.columns if c not in ("identifier", "text")]
             if self.elo_attributes:
-                attr_list = list(self.elo_attributes.keys())
-                if score_cols != attr_list and len(score_cols) == len(attr_list):
-                    elo_df = elo_df.rename(columns=dict(zip(score_cols, attr_list)))
-                for col in [c for c in elo_df.columns if c not in ("identifier", "text")]:
-                    tmp = f"__tmp_{col}"
+                attributes = self.elo_attributes
+            else:
+                attributes = [topic]
+                cfg = EloConfig(
+                    attributes=attributes,
+                    n_rounds=self.n_elo_rounds,
+                    n_parallels=self.n_parallels,
+                    model=self.model_elo,
+                    save_dir=self.save_path,
+                    run_name=f"elo_{topic}",
+                    use_dummy=self.use_dummy,
+                    instructions=self.elo_instructions,
+                    additional_guidelines=self.elo_guidelines,
+                    print_example_prompt=False,
+                    timeout=self.elo_timeout,
+                )
+            rater = EloRater(cfg)
+            elo_df = await rater.run(
+                df_topic, text_col="text", id_col="identifier", reset_files=reset_files
+            )
+            elo_df["identifier"] = elo_df["identifier"].astype(str)
+            results["region"] = results["region"].astype(str)
+            if self.elo_attributes:
+                for attr in [k for k in elo_df.columns if k not in ("identifier", "text")]:
+                    temp_col = f"_elo_temp_{attr}"
                     results = results.merge(
-                        elo_df[["identifier", col]].rename(columns={col: tmp}),
+                        elo_df[["identifier", attr]].rename(columns={attr: temp_col}),
                         left_on="region",
                         right_on="identifier",
                         how="left",
                     )
-                    safe_topic = topic.replace(" ", "_")
-                    out_col = f"{safe_topic}__{col}__{slice_label}" if slice_label else f"{safe_topic}__{col}"
-                    results[out_col] = results[tmp]
-                    results = results.drop(columns=["identifier", tmp])
+                    results[attr] = results[temp_col]
+                    results = results.drop(columns=["identifier", temp_col])
             else:
-                col = score_cols[0]
-                tmp = "__tmp_topic"
+                temp_col = f"_elo_temp_{topic}"
                 results = results.merge(
-                    elo_df[["identifier", col]].rename(columns={col: tmp}),
+                    elo_df[["identifier", topic]].rename(columns={topic: temp_col}),
                     left_on="region",
                     right_on="identifier",
                     how="left",
                 )
-                safe_topic = topic.replace(" ", "_")
-                out_col = f"{safe_topic}__{col}__{slice_label}" if slice_label else f"{safe_topic}__{col}"
-                results[out_col] = results[tmp]
-                results = results.drop(columns=["identifier", tmp])
-        return results, reports_df
+                results[topic] = results[temp_col]
+                results = results.drop(columns=["identifier", temp_col])
 
-    async def _elo_across_slices(
-        self,
-        final_df: pd.DataFrame,
-        reports_df: pd.DataFrame,
-        reset_files: bool,
-    ) -> pd.DataFrame:
-        from ..utils.teleprompter import Teleprompter
-        import gabriel, inspect
-        from pathlib import Path
-        tele = Teleprompter(Path(inspect.getfile(gabriel)).parent / "prompts")
-        melted = (
-            reports_df
-            .melt(id_vars=["region", "time_slice"], var_name="topic", value_name="text")
-            .dropna(subset=["text"])
-        )
-        if "time_slice" not in melted.columns:
-            return final_df
-        out = melted[["region", "time_slice"]].drop_duplicates().astype({"region": str, "time_slice": str})
-        for topic in self.topics:
-            df_topic = (
-                melted[melted["topic"] == topic]
-                .assign(identifier=lambda d: d["region"].astype(str) + "|" + d["time_slice"].astype(str))
-                [["identifier", "text"]]
-                .drop_duplicates("identifier")
+        if self.fips_col and self.fips_col in self.df.columns:
+            merged = self.df[[self.county_col, self.fips_col]].drop_duplicates()
+            merged[self.fips_col] = merged[self.fips_col].astype(str).str.zfill(5)
+            results = results.merge(
+                merged, left_on="region", right_on=self.county_col
             )
-            attrs = list(self.elo_attributes.keys()) if self.elo_attributes else [topic]
-            cfg = EloConfig(
-                attributes=attrs,
-                n_rounds=self.n_elo_rounds,
-                n_parallels=self.n_parallels,
-                model=self.model_elo,
-                save_dir=self.save_path,
-                run_name=f"elo_across_slices_{topic}",
-                use_dummy=self.use_dummy,
-                instructions=self.elo_instructions,
-                additional_guidelines=self.elo_guidelines,
-                print_example_prompt=False,
-                timeout=self.elo_timeout,
-            )
-            elo = EloRater(tele, cfg)
-            elo_df = await elo.run(df_topic, text_col="text", id_col="identifier", reset_files=reset_files)
-            elo_df[["region", "time_slice"]] = elo_df["identifier"].str.split("|", n=1, expand=True)
-            score_cols = [c for c in elo_df.columns if c not in ("identifier", "text", "region", "time_slice")]
-            topic_df = elo_df[["region", "time_slice"] + score_cols].rename(columns={c: f"{c}__{topic}" for c in score_cols})
-            out = out.merge(topic_df, on=["region", "time_slice"], how="left")
-        return out
-
-    async def run(self, *, reset_files: bool = False) -> Tuple[pd.DataFrame, pd.DataFrame]:
-        if self.time_slices:
-            all_results = []
-            all_reports = []
-            run_elo_inside = (self.elo_axis == "regions")
-            for label, start, end in self.time_slices:
-                res, rep = await self._run_one_slice(label, start, end, reset_files, run_elo_inside)
-                all_results.append(res)
-                rep = rep.copy()
-                rep["time_slice"] = label
-                all_reports.append(rep)
-            final = all_results[0]
-            for other in all_results[1:]:
-                final = final.merge(other, on="region", how="outer")
-            reports_df = pd.concat(all_reports, ignore_index=True)
-            if self.elo_axis in ("slices", "both"):
-                final = await self._elo_across_slices(final, reports_df, reset_files)
-
-        else:
-            res, rep = await self._run_one_slice(None, None, None, reset_files, self.elo_axis == "regions")
-            final, reports_df = res, rep
-            if self.elo_axis == "slices":
-                final = await self._elo_across_slices(final, reports_df, reset_files)
-        if self.geo_id_col and self.geo_id_col in self.df.columns and self.z_score_choropleth:
-            merged = self.df[[self.region_col, self.geo_id_col]].drop_duplicates()
-            merged[self.geo_id_col] = merged[self.geo_id_col].astype(str)
-            final = final.merge(merged, left_on="region", right_on=self.region_col)
-            value_cols = list(self.elo_attributes.keys()) if self.elo_attributes else self.topics
-            for base in value_cols:
-                cols = [c for c in final.columns if c.startswith(base)]
-                for cc in cols:
-                    map_path = os.path.join(self.save_path, f"map_{cc}.html")
+            if self.elo_attributes:
+                for attr in self.elo_attributes.keys():
+                    map_path = os.path.join(self.save_path, f"map_{attr}.html")
                     create_county_choropleth(
-                        final,
-                        fips_col=self.geo_id_col,
-                        value_col=cc,
-                        title=f"Elo Rating for {cc}",
+                        results,
+                        fips_col=self.fips_col,
+                        value_col=attr,
+                        title=f"ELO Rating for {attr}",
                         save_path=map_path,
-                        z_score=True,
+                        z_score=self.z_score_choropleth,
                     )
-        final.to_csv(os.path.join(self.save_path, "region_elo.csv"), index=False)
-        reports_df.to_csv(os.path.join(self.save_path, "regional_reports.csv"), index=False)
-        return final, reports_df
+            else:
+                for topic in self.topics:
+                    map_path = os.path.join(self.save_path, f"map_{topic}.html")
+                    create_county_choropleth(
+                        results,
+                        fips_col=self.fips_col,
+                        value_col=topic,
+                        title=f"ELO Rating for {topic}",
+                        save_path=map_path,
+                        z_score=self.z_score_choropleth,
+                    )
+        results.to_csv(os.path.join(self.save_path, "county_elo.csv"), index=False)
+        return results

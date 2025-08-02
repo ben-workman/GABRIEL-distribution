@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import os
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Optional, Dict
 
 import pandas as pd
 
 from elo_rater import EloConfig, EloRater
 from regional import Regional
-from utility_functions import Teleprompter, create_county_choropleth
+from utility_functions import create_county_choropleth
 
 
 class CountyCounter:
@@ -22,7 +22,7 @@ class CountyCounter:
         *,
         fips_col: Optional[str] = None,
         save_dir: str = os.path.expanduser("~/Documents/runs"),
-        run_name: str | None = None,
+        run_name: Optional[str] = None,
         model_regional: str = "o4-mini",
         model_elo: str = "o4-mini",
         reasoning_effort: str = "medium",
@@ -34,7 +34,7 @@ class CountyCounter:
         additional_instructions: str = "",
         elo_instructions: str = "",
         z_score_choropleth: bool = True,  # Whether to plot z-score choropleths (default True for user intent)
-        elo_attributes: dict | None = None,  # Optional dict of {attr: description}
+        elo_attributes: Optional[Dict] = None,  # Optional dict of {attr: description}
     ) -> None:
         self.df = df.copy()
         self.county_col = county_col
@@ -71,7 +71,6 @@ class CountyCounter:
             search_context_size=self.search_context_size,
             print_example_prompt=True,
         )
-        self.tele = Teleprompter(os.path.join(os.path.dirname(__file__), "prompts"))
 
     async def run(self, *, reset_files: bool = False) -> pd.DataFrame:
         reports_df = await self.regional.run(reset_files=reset_files)
@@ -98,7 +97,7 @@ class CountyCounter:
                 print_example_prompt=False,
                 timeout=self.elo_timeout,
             )
-            rater = EloRater(self.tele, cfg)
+            rater = EloRater(cfg)
             elo_df = await rater.run(df_topic, text_col="text", id_col="identifier")
             elo_df["identifier"] = elo_df["identifier"].astype(str)
             results["region"] = results["region"].astype(str)

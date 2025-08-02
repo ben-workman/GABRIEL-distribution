@@ -3,7 +3,7 @@ from __future__ import annotations
 import copy
 import os
 from dataclasses import dataclass
-from typing import Any, List, Type
+from typing import Any, List, Type, Optional
 
 import pandas as pd
 
@@ -26,7 +26,7 @@ class PromptParaphraserConfig:
 class PromptParaphraser:
     """Generate paraphrased versions of a task prompt and rerun the task."""
 
-    def __init__(self, cfg: PromptParaphraserConfig, template: PromptTemplate | None = None) -> None:
+    def __init__(self, cfg: PromptParaphraserConfig, template: Optional[PromptTemplate] = None) -> None:
         self.cfg = cfg
         self.template = template or PromptTemplate.from_package("prompt_paraphraser_prompt.jinja2")
         os.makedirs(self.cfg.save_dir, exist_ok=True)
@@ -52,7 +52,7 @@ class PromptParaphraser:
         task_cls: Type[Any],
         task_cfg: Any,
         *run_args: Any,
-        template: PromptTemplate | None = None,
+        template: Optional[PromptTemplate] = None,
         **run_kwargs: Any,
     ) -> pd.DataFrame:
         base_template = template or getattr(task_cls(task_cfg), "template")
@@ -69,6 +69,9 @@ class PromptParaphraser:
         for idx, text in enumerate(variants, start=1):
             variant_template = PromptTemplate(text)
             cfg_variant = copy.deepcopy(task_cfg)
+            if hasattr(cfg_variant, "file_name"):
+                base, ext = os.path.splitext(cfg_variant.file_name)
+                cfg_variant.file_name = f"{base}_p{idx}{ext}"
             if hasattr(cfg_variant, "save_path"):
                 base, ext = os.path.splitext(cfg_variant.save_path)
                 cfg_variant.save_path = f"{base}_p{idx}{ext}"

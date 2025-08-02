@@ -10,7 +10,7 @@ import pandas as pd
 
 from ..core.prompt_template import PromptTemplate
 from ..utils.openai_utils import get_all_responses
-from ..utils import safe_json
+from ..utils import safest_json
 
 
 @dataclass
@@ -18,8 +18,9 @@ class DeidentifyConfig:
     """Configuration for :class:`Deidentifier`."""
 
     model: str = "o4-mini"
-    n_parallels: int = 50
-    save_path: str = "deidentified.csv"
+    n_parallels: int = 400
+    save_dir: str = "deidentify"
+    file_name: str = "deidentified.csv"
     use_dummy: bool = False
     timeout: float = 60.0
     max_words_per_call: int = 7500
@@ -30,9 +31,10 @@ class DeidentifyConfig:
 class Deidentifier:
     """Iterative de-identification of sensitive entities in text."""
 
-    def __init__(self, cfg: DeidentifyConfig, template: PromptTemplate | None = None) -> None:
+    def __init__(self, cfg: DeidentifyConfig, template: Optional[PromptTemplate] = None) -> None:
         self.cfg = cfg
         self.template = template or PromptTemplate.from_package("faceless_prompt.jinja2")
+        os.makedirs(self.cfg.save_dir, exist_ok=True)
 
     @staticmethod
     def _chunk_by_words(text: str, max_words: int) -> List[str]:
@@ -61,6 +63,11 @@ class Deidentifier:
 
         group_ids = df_proc["group_id"].unique().tolist()
         group_segments: Dict[str, List[str]] = {}
+
+        base_name = os.path.splitext(self.cfg.file_name)[0]
+        csv_path = os.path.join(self.cfg.save_dir, f"{base_name}_cleaned.csv")
+        raw_root = os.path.join(self.cfg.save_dir, f"{base_name}_raw_responses")
+        base_root, ext = os.path.splitext(raw_root + ".csv")
         for gid in group_ids:
             segs: List[str] = []
             texts = (
@@ -100,7 +107,7 @@ class Deidentifier:
                 identifiers=identifiers,
                 n_parallels=self.cfg.n_parallels,
                 model=self.cfg.model,
-                save_path=f"{os.path.splitext(self.cfg.save_path)[0]}_round{rnd}.csv",
+                save_path=f"{base_root}_round{rnd}{ext}",
                 use_dummy=self.cfg.use_dummy,
                 timeout=self.cfg.timeout,
                 json_mode=True,
@@ -108,7 +115,7 @@ class Deidentifier:
             for ident, resp in zip(batch_df["Identifier"], batch_df["Response"]):
                 gid = ident.split("_seg_")[0]
                 main = resp[0] if isinstance(resp, list) and resp else ""
-                parsed = safe_json(main)
+                parsed = await safest_json(main)
                 if parsed:
                     group_to_map[gid] = parsed
 
@@ -134,5 +141,5 @@ class Deidentifier:
 
         df_proc["mapping"] = mappings_col
         df_proc["deidentified_text"] = deidentified_texts
-        df_proc.to_csv(self.cfg.save_path, index=False)
+        df_proc.to_csv(csv_path, index=False)
         return df_proc
