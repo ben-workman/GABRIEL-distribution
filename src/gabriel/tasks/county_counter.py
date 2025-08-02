@@ -83,29 +83,29 @@ class CountyCounter:
             df_topic = reports_df[["region", topic]].rename(
                 columns={"region": "identifier", topic: "text"}
             )
-            if self.elo_attributes:
-                attributes = self.elo_attributes
-            else:
-                attributes = [topic]
-                cfg = EloConfig(
-                    attributes=attributes,
-                    n_rounds=self.n_elo_rounds,
-                    n_parallels=self.n_parallels,
-                    model=self.model_elo,
-                    save_dir=self.save_path,
-                    run_name=f"elo_{topic}",
-                    use_dummy=self.use_dummy,
-                    instructions=self.elo_instructions,
-                    additional_guidelines=self.elo_guidelines,
-                    print_example_prompt=False,
-                    timeout=self.elo_timeout,
-                )
+
+            attributes = self.elo_attributes if self.elo_attributes else [topic]
+            cfg = EloConfig(
+                attributes=attributes,
+                n_rounds=self.n_elo_rounds,
+                n_parallels=self.n_parallels,
+                model=self.model_elo,
+                save_dir=self.save_path,
+                run_name=f"elo_{topic}",
+                use_dummy=self.use_dummy,
+                instructions=self.elo_instructions,
+                additional_guidelines=self.elo_guidelines,
+                print_example_prompt=False,
+                timeout=self.elo_timeout,
+            )
+
             rater = EloRater(cfg)
             elo_df = await rater.run(
                 df_topic, text_col="text", id_col="identifier", reset_files=reset_files
             )
             elo_df["identifier"] = elo_df["identifier"].astype(str)
             results["region"] = results["region"].astype(str)
+
             if self.elo_attributes:
                 for attr in [k for k in elo_df.columns if k not in ("identifier", "text")]:
                     temp_col = f"_elo_temp_{attr}"
@@ -127,7 +127,7 @@ class CountyCounter:
                 )
                 results[topic] = results[temp_col]
                 results = results.drop(columns=["identifier", temp_col])
-
+            
         if self.fips_col and self.fips_col in self.df.columns:
             merged = self.df[[self.county_col, self.fips_col]].drop_duplicates()
             merged[self.fips_col] = merged[self.fips_col].astype(str).str.zfill(5)
