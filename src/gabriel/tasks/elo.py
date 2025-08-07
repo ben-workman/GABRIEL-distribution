@@ -24,8 +24,8 @@ class EloConfig:
     power_match_explore_frac: float = 0.2
     power_match_candidate_neighbors: int = 20
     power_match_high_se_frac: float = 0.25
-    rating_method: str = "bt"           # "bt", "pl", or "elo"
-    k_factor: float = 32.0              # only for classic Elo
+    rating_method: str = "bt"
+    k_factor: float = 32.0
     bt_pseudo_count: float = 0.1
     bt_max_iter: int = 1000
     bt_tol: float = 1e-6
@@ -62,7 +62,6 @@ class EloRater:
             self.history_multi[attr] = []
         self.history_multi[attr].append(ranking)
 
-    # ---------- Bradley–Terry / Plackett–Luce helpers ----------
     def _fit_bt(
         self,
         item_ids: List[str],
@@ -137,7 +136,6 @@ class EloRater:
         if all(len(r) == 2 for r in rankings):
             outcomes = [(r[0], r[1]) for r in rankings]
             return self._fit_bt(item_ids, outcomes, pseudo, max_iter, tol, return_info=False)
-
         n = len(item_ids)
         idx = {item: i for i, item in enumerate(item_ids)}
         w_i = np.zeros(n, dtype=float)
@@ -151,7 +149,6 @@ class EloRater:
                 w_i[i_] += 1.0
         if len(rankings_idx) == 0:
             return {i: 0.0 for i in item_ids}
-
         w_i += pseudo
         p = np.ones(n, dtype=float)
         for _ in range(max_iter):
@@ -172,7 +169,6 @@ class EloRater:
         s -= s.mean()
         return {item: float(val) for item, val in zip(item_ids, s)}
 
-    # ---------- pairing strategies ----------
     def _pairs_random(self, item_ids, texts_by_id, mpr):
         pairs_set: set[Tuple[str, str]] = set()
         for a in item_ids:
@@ -231,14 +227,12 @@ class EloRater:
         for _ in range(n_random_targets):
             a, b = self.rng.sample(item_ids, 2)
             candidate_pairs_set.add(tuple(sorted((a, b))))
-
         def logistic_clip(x: float) -> float:
             if x > 50:
                 return 1.0
             if x < -50:
                 return 0.0
             return 1.0 / (1.0 + np.exp(-x))
-
         scored_pairs: List[Tuple[float, str, str]] = []
         for a, b in candidate_pairs_set:
             diff = current_ratings[a] - current_ratings[b]
@@ -249,7 +243,6 @@ class EloRater:
             param_unc = var_a + var_b
             score = outcome_var * param_unc
             scored_pairs.append((score, a, b))
-
         needed = {i: mpr for i in item_ids}
         pairs_selected: List[Tuple[str, str]] = []
         pairs_selected_set: set[Tuple[str, str]] = set()
@@ -262,7 +255,6 @@ class EloRater:
                 pairs_selected_set.add(tup)
                 needed[a] -= 1
                 needed[b] -= 1
-
         ids_needing = [i for i, cnt in needed.items() if cnt > 0]
         attempts = 0
         while ids_needing and attempts < 10000:
@@ -281,7 +273,6 @@ class EloRater:
                 needed[a] -= 1
                 needed[b] -= 1
             ids_needing = [i for i, cnt in needed.items() if cnt > 0]
-
         return [((a, texts_by_id[a]), (b, texts_by_id[b])) for a, b in pairs_selected_set]
 
     def _generate_pairs(self, item_ids, texts_by_id, current_ratings, se_agg):
@@ -292,7 +283,6 @@ class EloRater:
             return self._pairs_info_gain(item_ids, texts_by_id, current_ratings, se_agg, mpr)
         return self._pairs_adjacent(item_ids, texts_by_id, current_ratings, mpr)
 
-    # ---------- main ----------
     async def run(
         self,
         df: pd.DataFrame,
@@ -305,29 +295,23 @@ class EloRater:
         final_path = os.path.join(self.save_path, self.cfg.final_filename)
         if not reset_files and os.path.exists(final_path):
             return pd.read_csv(final_path)
-
         df = df.copy()
         df[id_col] = df[id_col].astype(str)
         texts = list(zip(df[id_col], df[text_col]))
         texts_by_id = {i: t for i, t in texts}
         item_ids = [i for i, _ in texts]
-
         if isinstance(self.cfg.attributes, dict):
             attr_keys = list(self.cfg.attributes.keys())
         else:
             attr_keys = list(self.cfg.attributes)
-
         ratings: Dict[str, Dict[str, float]] = {i: {a: 0.0 for a in attr_keys} for i in item_ids}
         history_pairs: Dict[str, List[Tuple[str, str]]] = {a: [] for a in attr_keys}
         se_store: Dict[str, Dict[str, float]] = {a: {i: np.nan for i in item_ids} for a in attr_keys}
-
         def expected(r_a: float, r_b: float) -> float:
             return 1 / (1 + 10 ** ((r_b - r_a) / 400))
-
         for rnd in range(self.cfg.n_rounds):
             current_agg = {i: float(np.mean(list(ratings[i].values()))) for i in item_ids}
             se_agg = self._last_se_agg
-
             pairs = self._generate_pairs(
                 item_ids=item_ids,
                 texts_by_id=texts_by_id,
@@ -336,7 +320,6 @@ class EloRater:
             )
             if not pairs:
                 break
-
             attr_batches = [attr_keys[i:i + 8] for i in range(0, len(attr_keys), 8)]
             prompts, ids = [], []
             for batch_idx, batch in enumerate(attr_batches):
@@ -355,7 +338,6 @@ class EloRater:
                         )
                     )
                     ids.append(f"{rnd}|{batch_idx}|{pair_idx}|{id_a}|{id_b}")
-
             resp_df = await get_all_responses(
                 prompts=prompts,
                 identifiers=ids,
@@ -369,48 +351,47 @@ class EloRater:
                 print_example_prompt=self.cfg.print_example_prompt,
                 **kwargs,
             )
-
             for ident, resp in zip(resp_df.Identifier, resp_df.Response):
                 try:
                     parts = ident.split("|")
-                    # ── new, more forgiving parsing ───────────────────────────────────────────
                     if len(parts) == 7:
                         rnd_i, batch_idx, pair_idx, a_region, a_slice, b_region, b_slice = parts
                         a_id = f"{a_region}|{a_slice}"
                         b_id = f"{b_region}|{b_slice}"
                     elif len(parts) == 5:
-                        rnd_i, batch_idx, pair_idx, a_id, b_id = parts           # ← works for your ids
-                    else:                                                         # anything unexpected
+                        rnd_i, batch_idx, pair_idx, a_id, b_id = parts
+                    else:
                         continue
                     batch_idx = int(batch_idx)
-                    pair_idx  = int(pair_idx)
-
-
+                    pair_idx = int(pair_idx)
                 except ValueError:
                     continue
-
-                # robust dict coercion
-                async def _coerce_dict(raw: Any) -> Dict[str, Any]:
-                    obj = await safest_json(raw)
-                    if isinstance(obj, dict):
-                        return obj
-                    if isinstance(obj, str):
-                        obj2 = await safest_json(obj)
-                        if isinstance(obj2, dict):
-                            return obj2
-                    if isinstance(obj, list) and obj:
-                        inner = await safest_json(obj[0])
-                        if isinstance(inner, dict):
-                            return inner
+                batch = attr_batches[batch_idx]
+                async def _coerce_dict(raw: Any, batch_attrs: List[str]) -> Dict[str, Any]:
+                    try:
+                        obj = await safest_json(raw)
+                        if isinstance(obj, dict):
+                            return obj
+                        if isinstance(obj, str):
+                            obj2 = await safest_json(obj)
+                            if isinstance(obj2, dict):
+                                return obj2
+                        if isinstance(obj, list) and obj:
+                            inner = await safest_json(obj[0])
+                            if isinstance(inner, dict):
+                                return inner
+                    except Exception:
+                        pass
+                    if self.cfg.use_dummy:
+                        out: Dict[str, Any] = {}
+                        for a in batch_attrs:
+                            out[str(a)] = "circle" if self.rng.random() < 0.5 else "square"
+                        return out
                     return {}
-
-                safe_obj = await _coerce_dict(resp)
+                safe_obj = await _coerce_dict(resp, batch)
                 if not safe_obj:
                     continue
-
-                batch = attr_batches[batch_idx]
                 batch_attr_map = {str(k).strip().lower(): k for k in batch}
-
                 def _winner(val: Any) -> str:
                     if isinstance(val, dict) and "winner" in val:
                         val = val["winner"]
@@ -424,14 +405,12 @@ class EloRater:
                     if v.startswith("insufficient"):
                         return "insufficient"
                     return ""
-
                 for attr_raw, winner_raw in safe_obj.items():
                     attr_key_l = str(attr_raw).strip().lower()
                     if attr_key_l not in batch_attr_map:
                         continue
                     real_attr = batch_attr_map[attr_key_l]
                     w = _winner(winner_raw)
-
                     if w == "circle":
                         history_pairs[real_attr].append((a_id, b_id))
                         score_a, score_b = 1.0, 0.0
@@ -444,24 +423,19 @@ class EloRater:
                         score_a = score_b = 0.5
                     else:
                         continue
-
                     if self.cfg.rating_method.lower() == "elo":
                         exp_a = expected(ratings[a_id][real_attr], ratings[b_id][real_attr])
                         ratings[a_id][real_attr] += self.cfg.k_factor * (score_a - exp_a)
                         ratings[b_id][real_attr] += self.cfg.k_factor * (score_b - (1 - exp_a))
-
             method = self.cfg.rating_method.lower()
-
             if method in ("bt", "pl"):
                 se_agg_next: Dict[str, float] = {i: 0.0 for i in item_ids}
                 se_agg_counts: Dict[str, int] = {i: 0 for i in item_ids}
-
                 for attr in attr_keys:
                     outcomes = history_pairs[attr]
                     rankings: List[List[str]] = []
                     if method == "pl" and self.cfg.accept_multiway:
                         rankings = self.history_multi.get(attr, [])
-
                     if method == "pl" and rankings:
                         pl_scores = self._fit_pl(
                             item_ids=item_ids,
@@ -499,7 +473,6 @@ class EloRater:
                                 se_store[attr][i] = float(se_val)
                                 se_agg_next[i] += float(se_val)
                                 se_agg_counts[i] += 1
-
                 if self.cfg.compute_se:
                     for i in item_ids:
                         if se_agg_counts[i] > 0:
@@ -507,7 +480,6 @@ class EloRater:
                         else:
                             se_agg_next[i] = 1.0
                     self._last_se_agg = se_agg_next
-
                 if self.cfg.save_per_round:
                     self._save_round_ratings(
                         ratings=ratings,
@@ -517,7 +489,6 @@ class EloRater:
                         include_se=self.cfg.compute_se,
                         se_store=se_store,
                     )
-
             elif method == "elo":
                 for attr in attr_keys:
                     vals = [ratings[i][attr] for i in item_ids]
@@ -533,7 +504,6 @@ class EloRater:
                         include_se=False,
                         se_store=None,
                     )
-
         rows = []
         zscores: Dict[str, Dict[str, float]] = {}
         if self.cfg.add_zscore:
@@ -545,7 +515,6 @@ class EloRater:
                 else:
                     z = {i: float((ratings[i][attr] - mean) / std) for i in item_ids}
                 zscores[attr] = z
-
         for i in item_ids:
             row = {"identifier": i, "text": texts_by_id[i]}
             for attr in attr_keys:
