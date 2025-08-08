@@ -56,6 +56,8 @@ class CountyCounter:
         time_slices: Optional[List[Tuple[str, str, str]]] = None,
         elo_axis: str = "regions",
         return_reports: bool = False,
+        rating_method: str = "bt",
+        k_factor: float = 32.0,
     ) -> None:
         self.df = df.copy()
         self.county_col = county_col
@@ -77,6 +79,8 @@ class CountyCounter:
         self.elo_timeout = elo_timeout
         self.elo_axis = elo_axis
         self.return_reports = return_reports
+        self.rating_method = rating_method
+        self.k_factor = k_factor
 
         if time_slices is None:
             if years is not None:
@@ -121,7 +125,6 @@ class CountyCounter:
     ) -> Tuple[pd.DataFrame, pd.DataFrame]:
         time_block = _time_msg(start, end)
         ai = (f"{self.additional_instructions}\n{time_block}").strip() if time_block else self.additional_instructions
-
         reg_cfg = RegionalConfig(
             model=self.model_regional,
             n_parallels=self.n_parallels,
@@ -136,11 +139,9 @@ class CountyCounter:
         )
         regional = Regional(self.df, self.county_col, self.topics, reg_cfg)
         reports_df = await regional.run(reset_files=reset_files)
-
         results = reports_df[["region"]].copy().astype({"region": str})
         if not run_elo:
             return results, reports_df
-
         for topic in self.topics:
             df_topic = reports_df[["region", topic]].rename(columns={"region": "identifier", topic: "text"})
             attributes = self.elo_attributes if self.elo_attributes else [topic]
@@ -156,12 +157,14 @@ class CountyCounter:
                 additional_guidelines=self.elo_guidelines,
                 print_example_prompt=False,
                 timeout=self.elo_timeout,
+                rating_method=self.rating_method,
+                k_factor=self.k_factor,
+                compute_se=(self.rating_method != "elo"),
             )
             rater = EloRater(cfg)
             elo_df = await rater.run(df_topic, text_col="text", id_col="identifier", reset_files=reset_files)
             elo_df["identifier"] = elo_df["identifier"].astype(str)
             results["region"] = results["region"].astype(str)
-
             if self.elo_attributes:
                 for attr in [k for k in elo_df.columns if k not in ("identifier", "text")]:
                     tmp = f"_elo_tmp_{attr}"
@@ -185,7 +188,6 @@ class CountyCounter:
                 out_col = topic if not slice_label else f"{topic}__{slice_label}"
                 results[out_col] = results[tmp]
                 results = results.drop(columns=["identifier", tmp])
-
         return results, reports_df
 
     async def _elo_across_slices(
@@ -219,6 +221,9 @@ class CountyCounter:
                 additional_guidelines=self.elo_guidelines,
                 print_example_prompt=False,
                 timeout=self.elo_timeout,
+                rating_method=self.rating_method,
+                k_factor=self.k_factor,
+                compute_se=(self.rating_method != "elo"),
             )
             elo = EloRater(cfg)
             elo_df = await elo.run(df_topic, text_col="text", id_col="identifier", reset_files=reset_files)
@@ -239,12 +244,10 @@ class CountyCounter:
                 rep = rep.copy()
                 rep["time_slice"] = label
                 reports_all.append(rep)
-
             final = runs[0]
             for other in runs[1:]:
                 final = final.merge(other, on="region", how="outer")
             reports_df = pd.concat(reports_all, ignore_index=True)
-
             if self.elo_axis in ("slices", "both"):
                 across = await self._elo_across_slices(reports_df, reset_files)
                 final = final.merge(across, on="region", how="left")
@@ -266,12 +269,14 @@ class CountyCounter:
                     additional_guidelines=self.elo_guidelines,
                     print_example_prompt=False,
                     timeout=self.elo_timeout,
+                    rating_method=self.rating_method,
+                    k_factor=self.k_factor,
+                    compute_se=(self.rating_method != "elo"),
                 )
                 rater = EloRater(cfg)
                 elo_df = await rater.run(df_topic, text_col="text", id_col="identifier", reset_files=reset_files)
                 elo_df["identifier"] = elo_df["identifier"].astype(str)
                 final["region"] = final["region"].astype(str)
-
                 if self.elo_attributes:
                     for attr in [k for k in elo_df.columns if k not in ("identifier", "text")]:
                         tmp = f"_elo_tmp_{attr}"
@@ -293,7 +298,6 @@ class CountyCounter:
                     )
                     final[topic] = final[tmp]
                     final = final.drop(columns=["identifier", tmp])
-
         if self.fips_col and self.fips_col in self.df.columns:
             merged = self.df[[self.county_col, self.fips_col]].drop_duplicates()
             merged[self.fips_col] = merged[self.fips_col].astype(str).str.zfill(5)
@@ -306,7 +310,6 @@ class CountyCounter:
                 for topic in self.topics:
                     path = os.path.join(self.save_path, f"map_{topic}.html")
                     create_county_choropleth(final, fips_col=self.fips_col, value_col=topic, title=f"ELO Rating for {topic}", save_path=path, z_score=self.z_score_choropleth)
-
         final.to_csv(os.path.join(self.save_path, "region_elo.csv"), index=False)
         reports_df.to_csv(os.path.join(self.save_path, "regional_reports.csv"), index=False)
         return (final, reports_df) if self.return_reports else final

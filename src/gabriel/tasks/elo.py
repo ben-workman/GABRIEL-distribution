@@ -13,7 +13,6 @@ from ..core.prompt_template import PromptTemplate
 from ..utils.openai_utils import get_all_responses
 from ..utils import safest_json
 
-
 @dataclass
 class EloConfig:
     attributes: Union[dict, List[str]]
